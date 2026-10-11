@@ -1,0 +1,92 @@
+name: Release offline assets
+
+# Publishes, for each tag, everything a Flatpak or RPM build needs without
+# network access during the build:
+#   - sdist and wheel that already contain the built web client
+#   - a vendored node_modules tarball (for rebuilding the client offline)
+#   - node-sources.json for flatpak-builder (best effort, see note below)
+
+on:
+  push:
+    tags:
+      - "v*"
+      - "[0-9]*.[0-9]*.[0-9]*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  assets:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # hatch-vcs needs tags
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the web client once, with network
+        run: |
+          npm ci
+          npm run bundle
+
+      - name: Build sdist and wheel (client already built, no npm in the hook)
+        env:
+          FONTRA_SKIP_BUNDLE: "1"
+        run: |
+          pip install build
+          python -m build
+          ls -l dist
+
+      - name: Check the sdist really contains the client
+        run: |
+          tar tzf dist/*.tar.gz | grep -m1 'src/fontra/client/' \
+            || { echo "client missing from sdist"; exit 1; }
+
+      - name: Vendor node_modules for offline rebuilds
+        run: |
+          tag="${GITHUB_REF_NAME:-dev}"
+          tar --sort=name --owner=0 --group=0 --numeric-owner \
+              -czf "fontra-${tag}-node_modules.tar.gz" node_modules
+          npx --yes license-checker --production --json > bundled-licenses.json || true
+
+      - name: Generate flatpak node sources (best effort)
+        continue-on-error: true # workspaces support is unverified
+        run: |
+          pipx install "git+https://github.com/flatpak/flatpak-builder-tools.git#subdirectory=node"
+          flatpak-node-generator --no-requests-cache npm package-lock.json -o node-sources.json
+
+      - name: Offline smoke test of the wheel build
+        run: |
+          python -m venv /tmp/offline-venv
+          /tmp/offline-venv/bin/pip install dist/*.whl
+          /tmp/offline-venv/bin/fontra --help >/dev/null
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: |
+            dist/*
+            *.tar.gz
+            bundled-licenses.json
+            node-sources.json
+          if-no-files-found: warn
+
+      - name: Attach to the GitHub release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          files=(dist/* ./*node_modules.tar.gz bundled-licenses.json)
+          [ -f node-sources.json ] && files+=(node-sources.json)
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "Test release"
+          gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
