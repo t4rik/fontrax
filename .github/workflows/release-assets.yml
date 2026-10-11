@@ -90,3 +90,13 @@ jobs:
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
             || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "Test release"
           gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
+          
+      - name: Notify fontrax-flatpak
+        if: github.ref_type == 'tag'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.FLATPAK_PAT }}
+        run: |
+          gh api repos/t4rik/fontrax-flatpak/dispatches \
+            -f event_type=fontrax-release \
+            -f "client_payload[tag]=$GITHUB_REF_NAME"
