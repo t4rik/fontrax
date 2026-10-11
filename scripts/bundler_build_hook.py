@@ -34,9 +34,18 @@ class RollupBuildHook(BuildHookInterface):
         if thirdParty.exists():
             shutil.rmtree(thirdParty)
 
-        npmCi = ["npm", "ci"]
+        # On Windows npm is npm.cmd, which a bare "npm" without a shell
+        # can't find. shutil.which resolves the real executable on all OSes.
+        npm = shutil.which("npm")
+        if npm is None:
+            raise RuntimeError(
+                "npm not found. Install Node.js, or set FONTRA_SKIP_BUNDLE=1 "
+                "if src/fontra/client/ is already built."
+            )
+
+        npmCi = [npm, "ci"]
         if os.environ.get("FONTRA_NPM_OFFLINE") == "1":
             npmCi.append("--offline")
 
         subprocess.check_call(npmCi, cwd=root)
-        subprocess.check_call(["npm", "run", "bundle"], cwd=root)
+        subprocess.check_call([npm, "run", "bundle"], cwd=root)
